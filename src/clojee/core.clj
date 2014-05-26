@@ -1,11 +1,5 @@
 (ns clojee.core)
 
-(defn foo
-  "I don't do a whole lot."
-  [x]
-  (println x "Hello, World!"))
-
-
 ; syntax
 ;   (let* [a v1 b v2 c v3] form)
 ;   (do form1 form2 form3)
@@ -69,4 +63,56 @@
   (list 'loop* 
         (make-bindings bindings)
         form))
+
+
+(def eg1
+  [(make-def 'id (make-fn '(x) 'x))
+   (make-def '. (make-fn '(f g x) '(f (g x))))
+   (make-def 'd (make-fn '(x) '(x x)))
+   (make-def 't (make-fn '(f x) '(. f f x)))])
+
+
+(defn my-resolve
+  [sym env]
+  ((env :specials) sym))
+
+(defn f-symbol
+  [node log env]
+  (cons {:symbol node, 
+         :type "symbol", 
+         :resolution (my-resolve node env)}
+        log))
+
+(defn f-list
+  [node log env]
+  (loop [log-n (cons {:type "list" :length (count node)} log); :env env} log)
+         node-n node]
+        (if (empty? node-n)
+            log-n
+            (recur (f-node (first node-n) log-n env)
+                   (rest node-n)))))
+
+(defn f-node
+  [node log env]
+  (if (symbol? node)
+      (f-symbol node log env)
+      (f-list node log env)))
+
+
+(def specials
+  {'if "yes!"
+   'def "yes!"
+   'fn* "yes!"
+   'let* "yes!"
+   'loop* "yes!"
+   'do "yes!" 
+   'set! "yes!"})
+   
+(def root-env {:specials specials})
+
+(defn run-eg
+  ([] (run-eg '() root-env))
+  ([log env] 
+   (doseq [x (f-node (second eg1) log env)]
+     (prn x))))
 
