@@ -14,59 +14,59 @@
 ;     (if true  a b) -> a
 ;     (if false a b) -> b
 
-(defn symbol-check
-  [sym]
-  (and (not (symbol? sym))
-       (throw (new Exception (str "expected symbol, got: " sym)))))
-
-(defn make-bindings
-  [bindings]
-  (if (not (= 0 (mod (count bindings) 2))) ; just for the side effects
-      (throw (new Exception "even number of bindings required")))
-  (let [bs (partition 2 bindings)]
-    (doseq [[sym _] bs]
-           (symbol-check sym))
-    bs))
-  
-
 (defn make-let
   [bindings body]
-  (list 'let*
-        (make-bindings bindings)
-        body))
+  {:type "let*"
+   :bindings bindings
+   :body body})
 
 (defn make-do
   [forms]
-  forms)
+  {:type "do"
+   :forms forms})
 
 (defn make-fn
   [symbols body]
-  (doseq [x symbols] (symbol-check x))
-  (list 'fn* symbols body))
+  {:type "fn*"
+   :params symbols
+   :body body})
 
 (defn make-def
   [symbol value]
-  (symbol-check symbol)
-  (list 'def symbol value))
+  {:type "def"
+   :symbol symbol
+   :value value})
 
 (defn make-set!
   [symbol value]
-  (symbol-check symbol)
-  (list 'set! symbol value))
+  {:type "set!"
+   :symbol symbol
+   :value value})
 
 (defn make-if
   [pred then else]
-  (list 'if pred then else))
+  {:type "if"
+   :pred pred
+   :then then
+   :else else})
 
 (defn make-loop
   [bindings form]
-  (list 'loop* 
-        (make-bindings bindings)
-        form))
+  {:type "loop"
+   :bindings bindings
+   :form form})
+
+(defn make-app
+  [f args]
+  {:type "application"
+   :function f
+   :arguments args})
 
 
 (def eg1
   [(make-def 'id (make-fn '(x) 'x))
+   (make-app 'f '[x y])
+   (make-let '#{f x} (make-app 'f '[x y]))
    (make-def '. (make-fn '(f g x) '(f (g x))))
    (make-def 'd (make-fn '(x) '(x x)))
    (make-def 't (make-fn '(f x) '(. f f x)))])
@@ -74,7 +74,16 @@
 
 (defn my-resolve
   [sym env]
-  ((env :specials) sym))
+  (cond 
+    (nil? env) nil
+    (contains? (env :bindings) sym) true
+    :else (recur sym (env :parent))))
+
+(defn new-env
+  [bindings old-env]
+  {:bindings bindings ; TODO what's the type of `bindings`?  vector?  map?  set?
+   :parent old-env})
+
 
 (defn f-symbol
   [node log env]
@@ -83,36 +92,56 @@
          :resolution (my-resolve node env)}
         log))
 
-(defn f-list
+(defn f-def
   [node log env]
-  (loop [log-n (cons {:type "list" :length (count node)} log); :env env} log)
-         node-n node]
-        (if (empty? node-n)
-            log-n
-            (recur (f-node (first node-n) log-n env)
-                   (rest node-n)))))
+  ; todo: ... everything! ...
+  log)
+
+(defn f-let
+  "recurs on: value of each binding, form"
+  ; todo: unique symbols?
+  ; todo: recur on binding values
+  [node log env]
+  (f-node (node :body)
+          log
+          (new-env (node :bindings) env)))
+
+(defn f-app
+  [node log env]
+  (let [log2 (f-node (node :function) log env)]
+    (loop [log-n log2 args (node :arguments)]
+      (if (empty? args)
+          log-n
+          (recur (f-node (first args) log-n env) (rest args))))))
+
+(def actions
+ {"symbol"      f-symbol
+  "def"         f-def
+  "application" f-app
+  "let*"        f-let})
+
+(defn my-type
+  [node]
+  (cond
+    (symbol? node) "symbol"
+    (map? node) (node :type)
+    :else (throw (new Exception (str "unrecognized node -- " (if (nil? node) "nil" node))))))
 
 (defn f-node
   [node log env]
-  (if (symbol? node)
-      (f-symbol node log env)
-      (f-list node log env)))
+  (do (prn (str "checking ..." node)))
+  (let [type (my-type node)]
+    (if (contains? actions type)
+        ((actions type) node log env)
+        (throw (new Exception (str "unrecognized node type -- " node))))))
 
 
-(def specials
-  {'if "yes!"
-   'def "yes!"
-   'fn* "yes!"
-   'let* "yes!"
-   'loop* "yes!"
-   'do "yes!" 
-   'set! "yes!"})
-   
-(def root-env {:specials specials})
+(def root-env (new-env #{} nil))
 
 (defn run-eg
-  ([] (run-eg '() root-env))
-  ([log env] 
-   (doseq [x (f-node (second eg1) log env)]
+  ([] (run-eg (second eg1)))
+  ([node] (run-eg node '() root-env))
+  ([node log env] 
+   (doseq [x (f-node node log env)]
      (prn x))))
 
