@@ -1,24 +1,26 @@
 (ns clojee.core)
 
 ; syntax
-;   (let* [a v1 b v2 c v3] form)
-;   (do form1 form2 form3)
-;   (fn* [a b c] form)
-;   (def q form)
-;   (set! x form)
-;   (loop* [x v1 y v2] form_including_recur)
+;   {let* [a v1 b v2 c v3] form}
+;       warning: shadowing outer variable
+;       error: duplicate names
+;       error: in values of bindings, form
+;   {def q form}
+;       error: q already defined
+;   q
+;       error: q not resolvable
+;   (f x y)
+;   {do form1 form2 form3}
+;   {fn* [a b c] form}
+;       error: duplicate names
+;   {set! x form}
+;   {loop* [x v1 y v2] form_including_recur}
 ;       - no recur: warning, suggest let*
 ;       - nested loops: warning, recur may not work as expected
 ;       - duplicate var names: error
-;   (if pred then else)
-;     (if true  a b) -> a
-;     (if false a b) -> b
-
-(defn make-let
-  [bindings body]
-  {:type "let*"
-   :bindings bindings
-   :body body})
+;   {if pred then else}
+;     {if true  a b} -> a
+;     {if false a b} -> b
 
 (defn make-do
   [forms]
@@ -30,12 +32,6 @@
   {:type "fn*"
    :params symbols
    :body body})
-
-(defn make-def
-  [symbol value]
-  {:type "def"
-   :symbol symbol
-   :value value})
 
 (defn make-set!
   [symbol value]
@@ -56,6 +52,18 @@
    :bindings bindings
    :form form})
 
+(defn make-let
+  [bindings body]
+  {:type "let*"
+   :bindings bindings
+   :body body})
+
+(defn make-def
+  [symbol value]
+  {:type "def"
+   :symbol symbol
+   :value value})
+
 (defn make-app
   [f args]
   {:type "application"
@@ -64,20 +72,29 @@
 
 
 (def eg1
-  [(make-def 'id (make-fn '(x) 'x))
+  [;(make-def 'id (make-fn '(x) 'x))
+;   (make-def 'a 'True)
+;   (make-def 'b 'False)
+;   (make-def 'z (make-app 'a '[a b c]))
+   (make-def 'f 'True)
    (make-app 'f '[x y])
-   (make-let '[[f g] [x z]] (make-app 'f '[x y]))
-   (make-def '. (make-fn '(f g x) '(f (g x))))
-   (make-def 'd (make-fn '(x) '(x x)))
-   (make-def 't (make-fn '(f x) '(. f f x)))])
+   (make-let '[[f g]] (make-let '[[f h]] 'q))
+;   (make-let '[[f g] [f h]] 'f)
+;   (make-let '[[f g] [x z]] (make-app 'f '[x y]))])
+;   (make-def '. (make-fn '(f g x) '(f (g x))))
+;   (make-def 'd (make-fn '(x) '(x x)))
+;   (make-def 't (make-fn '(f x) '(. f f x)))])
+  ])
 
 
 (defn my-resolve
-  [sym env]
+  [sym env state]
   (cond 
-    (nil? env) nil
+    (nil? env)
+      (if (contains? (state :bindings) sym)
+          "root state")
     (contains? (env :bindings) sym) (env :depth)
-    :else (recur sym (env :parent))))
+    :else (recur sym (env :parent) state)))
 
 (defn new-env
   [bindings old-env]
@@ -90,37 +107,61 @@
 
 
 (defn f-symbol
-  [node log env]
-  (cons {:symbol node, 
-         :type "symbol", 
-         :resolution (my-resolve node env)}
-        log))
+  [node log env state]
+  [(cons {:symbol node, 
+          :type "symbol", 
+          :resolution (my-resolve node env state)}
+         log)
+   state])
+
+(defn is-deffed
+  [symbol log bindings]
+  (cons {:type "def-check" :symbol symbol
+         :is-deffed (contains? bindings symbol)} log))
 
 (defn f-def
-  [node log env]
-  ; todo: ... everything! ...
-  log)
-
+  [node log env state]
+  (let [log-2 (is-deffed (node :symbol) log (state :bindings))
+        state-2 {:bindings (conj (state :bindings) (node :symbol))}] ; TODO is there a better way to copy most of a table, changing only 1 key?
+    (f-node (node :value) log-2 env state-2)))
+    
 (defn m-seq
-  [nodes log env]
-  (loop [log-n log node-n nodes]
-    (if (empty? node-n)
-        log-n
-        (recur (f-node (first node-n) log-n env) (rest node-n)))))
+  ([nodes log env state] (m-seq f-node nodes log env state))
+  ([f nodes log env state]
+   (loop [log-n log node-n nodes state-n state]
+     (if (empty? node-n)
+         [log-n state-n]
+         (let [[log-z state-z] (f (first node-n) log-n env state-n)]
+           (recur log-z (rest node-n) state-z))))))
+
+(defn shadowing?
+  [sym log env state]
+  (let [r (my-resolve sym env state)]
+    (if (nil? r)
+        [log state]
+        [(cons {:type "shadowing" :symbol sym :location r} log)
+         state])))
 
 (defn f-let
   "recurs on: value of each binding, form"
   ; todo: unique symbols?
-  [node log env]
-  (let [log-2 (m-seq (map second (node :bindings)) log env)]
-    (f-node (node :body)
-            log-2
-            (new-env (apply hash-set (map first (node :bindings))) env))))
+  [node log env state]
+  (let [syms (map first (node :bindings))
+        [log-1 state-1] (m-seq shadowing? syms log env state)]
+    (let [[log-2 state-2] (m-seq (map second (node :bindings)) log-1 env state-1)]
+      (let [sym-set (apply hash-set syms)
+            log-3 (if (not (= (count syms) (count sym-set)))
+                      (cons {:type "duplicate symbol in let", :symbols syms} log-2)
+                      log-2)]
+        (f-node (node :body)
+                log-3
+                (new-env sym-set env)
+                state-2)))))
 
 (defn f-app
-  [node log env]
-  (let [log2 (f-node (node :function) log env)]
-    (m-seq (node :arguments) log2 env)))
+  [node log env state]
+  (let [[log-2 state-2] (f-node (node :function) log env state)]
+    (m-seq (node :arguments) log-2 env state-2)))
 
 (def actions
  {"symbol"      f-symbol
@@ -136,20 +177,29 @@
     :else (throw (new Exception (str "unrecognized node -- " (if (nil? node) "nil" node))))))
 
 (defn f-node
-  [node log env]
-  (do (prn (str "checking ..." node " in " env)))
+  [node log env state]
+;  (do (prn (str "checking ..." node " in " env)))
   (let [type (my-type node)]
     (if (contains? actions type)
-        ((actions type) node log env)
+        ((actions type) node log env state)
         (throw (new Exception (str "unrecognized node type -- " node))))))
 
 
-(def root-env (new-env #{'z} {:depth 0}))
+(def root-env (new-env #{} {:depth 0}))
+(def root-state {:bindings '#{True False}})
 
 (defn run-eg
   ([] (run-eg (second eg1)))
-  ([node] (run-eg node '() root-env))
-  ([node log env] 
-   (doseq [x (f-node node log env)]
-     (prn x))))
+  ([node] (run-eg node '() root-env root-state))
+  ([log env state]
+    (m-seq eg1 log env state))
+  ([node log env state]
+    (f-node node log env state)))
+
+(defn prn-eg
+  [& args]
+   (let [[l s] (apply run-eg args)]
+     (doseq [x l]
+       (prn x))
+     (prn s)))
 
