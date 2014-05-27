@@ -66,7 +66,7 @@
 (def eg1
   [(make-def 'id (make-fn '(x) 'x))
    (make-app 'f '[x y])
-   (make-let '#{f x} (make-app 'f '[x y]))
+   (make-let '[[f g] [x z]] (make-app 'f '[x y]))
    (make-def '. (make-fn '(f g x) '(f (g x))))
    (make-def 'd (make-fn '(x) '(x x)))
    (make-def 't (make-fn '(f x) '(. f f x)))])
@@ -76,13 +76,17 @@
   [sym env]
   (cond 
     (nil? env) nil
-    (contains? (env :bindings) sym) true
+    (contains? (env :bindings) sym) (env :depth)
     :else (recur sym (env :parent))))
 
 (defn new-env
   [bindings old-env]
-  {:bindings bindings ; TODO what's the type of `bindings`?  vector?  map?  set?
-   :parent old-env})
+  (doseq [x bindings]
+    (or (symbol? x)
+        (throw (new Exception "new-env: requires symbols for bindings"))))
+  {:bindings bindings
+   :parent old-env
+   :depth (+ 1 (:depth old-env))})
 
 
 (defn f-symbol
@@ -97,22 +101,26 @@
   ; todo: ... everything! ...
   log)
 
+(defn m-seq
+  [nodes log env]
+  (loop [log-n log node-n nodes]
+    (if (empty? node-n)
+        log-n
+        (recur (f-node (first node-n) log-n env) (rest node-n)))))
+
 (defn f-let
   "recurs on: value of each binding, form"
   ; todo: unique symbols?
-  ; todo: recur on binding values
   [node log env]
-  (f-node (node :body)
-          log
-          (new-env (node :bindings) env)))
+  (let [log-2 (m-seq (map second (node :bindings)) log env)]
+    (f-node (node :body)
+            log-2
+            (new-env (apply hash-set (map first (node :bindings))) env))))
 
 (defn f-app
   [node log env]
   (let [log2 (f-node (node :function) log env)]
-    (loop [log-n log2 args (node :arguments)]
-      (if (empty? args)
-          log-n
-          (recur (f-node (first args) log-n env) (rest args))))))
+    (m-seq (node :arguments) log2 env)))
 
 (def actions
  {"symbol"      f-symbol
@@ -129,14 +137,14 @@
 
 (defn f-node
   [node log env]
-  (do (prn (str "checking ..." node)))
+  (do (prn (str "checking ..." node " in " env)))
   (let [type (my-type node)]
     (if (contains? actions type)
         ((actions type) node log env)
         (throw (new Exception (str "unrecognized node type -- " node))))))
 
 
-(def root-env (new-env #{} nil))
+(def root-env (new-env #{'z} {:depth 0}))
 
 (defn run-eg
   ([] (run-eg (second eg1)))
